@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  symphony-oracle-monitor:
+    build: .
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+      - SYMPHONY_API_BASE=${SYMPHONY_API_BASE:-https://rest.cosmos.directory/symphony}
+      - MONITORING_INTERVAL=${MONITORING_INTERVAL:-300}
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data 
