@@ -7,16 +7,25 @@ A Discord bot that monitors Symphony blockchain validators for oracle miss count
 - 🔍 **Validator Monitoring**: Tracks all bonded validators on Symphony blockchain
 - 📊 **Miss Counter Tracking**: Monitors oracle miss counters for each validator
 - 🚨 **Change Detection**: Compares miss counts every 5 minutes and reports changes
-- 💬 **Discord Integration**: Sends formatted reports to Discord channels
+- 🔗 **Feeder Address Tracking**: Monitors feeder addresses for each validator
+- 💰 **Balance Monitoring**: Checks NOTE token balances for feeder addresses
+- 🚫 **No-Feeder Detection**: Identifies validators without configured feeders
+- 📈 **Vote Power Analysis**: Calculates voting power percentages for different validator states
+- 💱 **Exchange Rate Display**: Shows current oracle exchange rates
+- 💬 **Discord Integration**: Sends comprehensive formatted reports to Discord channels
 - 🐳 **Docker Support**: Easy deployment with Docker and Docker Compose
 - ⚡ **Async Operations**: Efficient async HTTP requests and Discord integration
 
 ## How It Works
 
-1. **Fetches Validators**: Queries `/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED` to get all bonded validators
+1. **Fetches Validators**: Queries `/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED` to get all bonded validators with their token amounts (vote power)
 2. **Tracks Miss Counters**: For each validator, queries `/symphony/oracle/v1beta1/validators/{validator_addr}/miss`
-3. **Compares Data**: Every 5 minutes, compares current miss counts with previous ones
-4. **Reports Changes**: Sends Discord messages showing which validators had increased misses and which remained stable
+3. **Monitors Feeder Addresses**: Queries `/symphony/oracle/v1beta1/validators/{validator_addr}/feeder` for each validator
+4. **Checks Feeder Balances**: For validators with feeders, queries `/cosmos/bank/v1beta1/balances/{feeder_addr}` to check MLD balances
+5. **Fetches Exchange Rates**: Queries `/symphony/oracle/v1beta1/denoms/exchange_rates` to show current oracle rates
+6. **Compares Data**: Every 5 minutes, compares current miss counts with previous ones
+7. **Calculates Vote Power**: Analyzes voting power distribution across different validator states
+8. **Reports Changes**: Sends comprehensive Discord messages with all monitoring data
 
 ## Setup Instructions
 
@@ -127,22 +136,48 @@ The bot sends formatted Discord embeds that look like this:
 
 ❌ Validators with Increased Misses
 • ⚛ Chiter in Cosmos
-  Misses: 87477 → 87480 (+3)
+  Misses: 87477 → 87480 (+3) | Vote Power: 476,191.00 MLD
+
+⚠️ Validators with Low Feeder Balance (<1 MLD)
 • Validator Name 2
-  Misses: 1234 → 1237 (+3)
+  Balance: 0.50 MLD | Vote Power: 123.46 MLD
+  Feeder: `symphony1gjtp7h65q8k6zaqmevmu3qrvsuvff9nfts492k`
+
+🚫 Validators without Feeders
+• Validator Name 3
+  Vote Power: 987.65 MLD
 
 ✅ Stable Validators
 42 validators with no new misses
 
+💱 Current Exchange Rates
+• UCNY: 46.02
+• UINR: 3.72
+• URUB: 4.04
+• UUSD: 328.25
+• UXAU: 1,180,744.31
+
+🗳️ Vote Power Analysis
+Total Network Vote Power: 15,234.57 MLD
+Stable Vote Power: 85.23% (12,987.65 MLD)
+Increased Misses Vote Power: 3.12% (476,191.00 MLD)
+No Feeder Vote Power: 6.48% (987.65 MLD)
+
 📊 Summary
 Total Validators: 45
 Monitored: 45
+Feeders Tracked: 42
+Low Balance: 1
+No Feeder: 1
 ```
 
 ## API Endpoints Used
 
 - **Validators**: `GET /cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED`
 - **Miss Counter**: `GET /symphony/oracle/v1beta1/validators/{validator_addr}/miss`
+- **Feeder Address**: `GET /symphony/oracle/v1beta1/validators/{validator_addr}/feeder`
+- **Feeder Balance**: `GET /cosmos/bank/v1beta1/balances/{feeder_addr}`
+- **Exchange Rates**: `GET /symphony/oracle/v1beta1/denoms/exchange_rates`
 
 ## Error Handling
 
