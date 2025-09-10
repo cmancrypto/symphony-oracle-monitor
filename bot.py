@@ -3,7 +3,7 @@ import asyncio
 import aiohttp
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 import logging
@@ -12,8 +12,12 @@ from pathlib import Path
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with timestamps
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S UTC'
+)
 logger = logging.getLogger(__name__)
 
 class ValidatorMonitor:
@@ -46,6 +50,9 @@ class ValidatorMonitor:
         self.exchange_rates: Dict[str, str] = {}  # denom -> rate
         self.validators_without_feeder: List[str] = []  # validator addresses without feeders
         
+        # Monitoring loop control
+        self.monitoring_task: Optional[asyncio.Task] = None
+        
         # Load persisted data
         self.load_data()
         
@@ -65,9 +72,30 @@ class ValidatorMonitor:
     def setup_bot_events(self):
         @self.bot.event
         async def on_ready():
-            logger.info(f'{self.bot.user} has connected to Discord!')
-            # Start monitoring loop
-            self.bot.loop.create_task(self.monitoring_loop())
+            startup_time = datetime.utcnow()
+            logger.info(f'🤖 {self.bot.user} connected to Discord at {startup_time.strftime("%H:%M:%S UTC")}')
+            logger.info(f'🔧 Configuration: Monitoring interval = {self.monitoring_interval}s, Channel ID = {self.channel_id}')
+            logger.info(f'🌐 API Base: {self.api_base}')
+            
+            # Only start monitoring loop if not already running
+            if self.monitoring_task is None or self.monitoring_task.done():
+                logger.info(f'🚀 Starting new monitoring loop task')
+                self.monitoring_task = self.bot.loop.create_task(self.monitoring_loop())
+            else:
+                logger.info(f'✅ Monitoring loop already running, skipping task creation')
+        
+        @self.bot.event
+        async def on_disconnect():
+            disconnect_time = datetime.utcnow()
+            logger.warning(f'🔌 Discord connection lost at {disconnect_time.strftime("%H:%M:%S UTC")}')
+        
+        @self.bot.event
+        async def on_resumed():
+            resume_time = datetime.utcnow()
+            logger.info(f'🔄 Discord connection resumed at {resume_time.strftime("%H:%M:%S UTC")}')
+            # Log monitoring task status when connection resumes
+            if self.monitoring_task is not None:
+                logger.info(f'📊 Monitoring task status after resume: {"running" if not self.monitoring_task.done() else "completed/cancelled"}')
     
     async def fetch_validators(self) -> List[Dict]:
         """Fetch bonded validators from Symphony API"""
@@ -80,10 +108,10 @@ class ValidatorMonitor:
                         data = await response.json()
                         return data.get('validators', [])
                     else:
-                        logger.error(f"Failed to fetch validators: {response.status}")
+                        logger.error(f"❌ Failed to fetch validators: HTTP {response.status} from {url}")
                         return []
             except Exception as e:
-                logger.error(f"Error fetching validators: {e}")
+                logger.error(f"❌ Error fetching validators from {url}: {e}")
                 return []
     
     async def fetch_validator_misses(self, validator_addr: str) -> Optional[int]:
@@ -97,10 +125,10 @@ class ValidatorMonitor:
                         data = await response.json()
                         return int(data.get('miss_counter', '0'))
                     else:
-                        logger.warning(f"Failed to fetch misses for {validator_addr}: {response.status}")
+                        logger.warning(f"⚠️ Failed to fetch misses for {validator_addr}: HTTP {response.status}")
                         return None
             except Exception as e:
-                logger.error(f"Error fetching misses for {validator_addr}: {e}")
+                logger.error(f"❌ Error fetching misses for {validator_addr}: {e}")
                 return None
     
     async def fetch_validator_feeder(self, validator_addr: str) -> Optional[str]:
@@ -119,16 +147,15 @@ class ValidatorMonitor:
                             error_data = await response.json()
                             error_message = error_data.get('message', '')
                             if "could not found feeder by validator" in error_message:
-                                logger.info(f"No feeder found for validator {validator_addr}")
                                 return "NO_FEEDER"
                         except:
                             # If we can't parse the JSON response, continue with the warning
                             pass
                         
-                        logger.warning(f"Failed to fetch feeder for {validator_addr}: {response.status}")
+                        logger.warning(f"⚠️ Failed to fetch feeder for {validator_addr}: HTTP {response.status}")
                         return None
             except Exception as e:
-                logger.error(f"Error fetching feeder for {validator_addr}: {e}")
+                logger.error(f"❌ Error fetching feeder for {validator_addr}: {e}")
                 return None
     
     async def fetch_feeder_balance(self, feeder_addr: str) -> Optional[int]:
@@ -150,10 +177,10 @@ class ValidatorMonitor:
                         # If no NOTE balance found, return 0
                         return 0
                     else:
-                        logger.warning(f"Failed to fetch balance for {feeder_addr}: {response.status}")
+                        logger.warning(f"⚠️ Failed to fetch balance for {feeder_addr}: HTTP {response.status}")
                         return None
             except Exception as e:
-                logger.error(f"Error fetching balance for {feeder_addr}: {e}")
+                logger.error(f"❌ Error fetching balance for {feeder_addr}: {e}")
                 return None
     
     async def fetch_exchange_rates(self) -> Dict[str, str]:
@@ -173,22 +200,25 @@ class ValidatorMonitor:
                                 rates[denom] = amount
                         return rates
                     else:
-                        logger.warning(f"Failed to fetch exchange rates: {response.status}")
+                        logger.warning(f"⚠️ Failed to fetch exchange rates: HTTP {response.status}")
                         return {}
             except Exception as e:
-                logger.error(f"Error fetching exchange rates: {e}")
+                logger.error(f"❌ Error fetching exchange rates: {e}")
                 return {}
     
     async def update_validator_data(self):
         """Update validator data, miss counters, feeder addresses, and balances"""
-        logger.info("Updating validator data...")
+        update_start_time = datetime.utcnow()
+        logger.info("📊 Starting validator data update...")
         
         # Fetch current validators
         validators = await self.fetch_validators()
         
         if not validators:
-            logger.warning("No validators fetched")
+            logger.warning("⚠️ No validators fetched from API")
             return
+        
+        logger.info(f"📋 Found {len(validators)} bonded validators")
         
         # Store previous misses
         self.previous_misses = self.current_misses.copy()
@@ -198,9 +228,15 @@ class ValidatorMonitor:
         self.validators_without_feeder = []
         
         # Fetch exchange rates (once per update cycle)
+        logger.info("💱 Fetching exchange rates...")
         self.exchange_rates = await self.fetch_exchange_rates()
+        logger.info(f"💱 Retrieved {len(self.exchange_rates)} exchange rates")
         
         # Update validator data and fetch miss counters, feeder addresses, and balances
+        processing_start_time = datetime.utcnow()
+        logger.info(f"🔍 Processing validator data starting at {processing_start_time.strftime('%H:%M:%S UTC')}...")
+        processed_count = 0
+        
         for validator in validators:
             operator_addr = validator.get('operator_address')
             moniker = validator.get('description', {}).get('moniker', 'Unknown')
@@ -231,10 +267,18 @@ class ValidatorMonitor:
                     if balance is not None:
                         self.feeder_balances[feeder_addr] = balance
                 
-                # Small delay to avoid overwhelming the API
-                await asyncio.sleep(0.1)
+                processed_count += 1
+                # Small delay to avoid overwhelming the API (reduced from 0.1s to 0.02s)
+                await asyncio.sleep(0.02)
         
-        logger.info(f"Updated data for {len(self.current_misses)} validators, {len(self.feeder_addresses)} feeders, {len(self.validators_without_feeder)} without feeders")
+        processing_end_time = datetime.utcnow()
+        processing_duration = (processing_end_time - processing_start_time).total_seconds()
+        update_end_time = datetime.utcnow()
+        update_duration = (update_end_time - update_start_time).total_seconds()
+        
+        logger.info(f"✅ Data update completed in {update_duration:.2f} seconds (processing: {processing_duration:.2f}s)")
+        logger.info(f"📈 Summary: {processed_count} validators processed, {len(self.current_misses)} with miss data, {len(self.feeder_addresses)} with feeders, {len(self.validators_without_feeder)} without feeders")
+        logger.info(f"⏱️ Average time per validator: {processing_duration/max(processed_count, 1):.3f} seconds")
         
         # Save data to disk
         self.save_data()
@@ -288,8 +332,11 @@ class ValidatorMonitor:
     async def analyze_and_report(self):
         """Analyze miss changes and send Discord report"""
         if not self.previous_misses:
-            logger.info("No previous data to compare, skipping report")
+            logger.info("📊 No previous data to compare, skipping report generation")
             return
+        
+        analysis_start_time = datetime.utcnow()
+        logger.info("📊 Starting data analysis and report generation...")
         
         increased_misses = []
         stable_validators = []
@@ -345,7 +392,14 @@ class ValidatorMonitor:
         # Calculate vote power statistics
         vote_power_stats = self.calculate_vote_power_stats(increased_misses, stable_validators)
         
+        analysis_end_time = datetime.utcnow()
+        analysis_duration = (analysis_end_time - analysis_start_time).total_seconds()
+        
+        logger.info(f"📊 Analysis completed in {analysis_duration:.2f} seconds")
+        logger.info(f"📈 Analysis results: {len(increased_misses)} validators with increased misses, {len(stable_validators)} stable, {len(low_balance_validators)} with low balance, {len(validators_without_feeder)} without feeders")
+        
         # Send Discord report
+        logger.info("📤 Sending Discord report...")
         await self.send_discord_report(increased_misses, stable_validators, low_balance_validators, validators_without_feeder, vote_power_stats)
     
     async def send_discord_report(self, increased_misses: List[Dict], stable_validators: List[Dict], 
@@ -460,26 +514,74 @@ class ValidatorMonitor:
             )
             
             await channel.send(embed=embed)
-            logger.info(f"Sent report: {len(increased_misses)} increased misses, {stable_count} stable, {len(low_balance_validators)} low balance, {len(validators_without_feeder)} no feeder")
+            logger.info(f"✅ Discord report sent successfully: {len(increased_misses)} increased misses, {stable_count} stable, {len(low_balance_validators)} low balance, {len(validators_without_feeder)} no feeder")
             
         except Exception as e:
-            logger.error(f"Error sending Discord report: {e}")
+            error_time = datetime.utcnow()
+            logger.error(f"❌ Error sending Discord report at {error_time.strftime('%H:%M:%S UTC')}: {e}")
+            logger.error(f"💬 Channel ID: {self.channel_id}, Bot connected: {self.bot.is_ready()}")
     
     async def monitoring_loop(self):
         """Main monitoring loop"""
-        logger.info(f"Starting monitoring loop (interval: {self.monitoring_interval} seconds)")
+        import uuid
+        loop_id = str(uuid.uuid4())[:8]
+        logger.info(f"🔄 Starting monitoring loop {loop_id} (interval: {self.monitoring_interval} seconds)")
         
         # Initial data fetch
+        loop_start_time = datetime.utcnow()
+        logger.info(f"🔄 Starting initial data fetch at {loop_start_time.strftime('%H:%M:%S UTC')}")
         await self.update_validator_data()
+        loop_end_time = datetime.utcnow()
+        duration = (loop_end_time - loop_start_time).total_seconds()
+        logger.info(f"✅ Initial data fetch completed in {duration:.2f} seconds")
         
         while True:
             try:
+                # Calculate and log next run time
+                sleep_start_time = datetime.utcnow()
+                next_run_time = sleep_start_time + timedelta(seconds=self.monitoring_interval)
+                logger.info(f"⏰ Next monitoring cycle scheduled for {next_run_time.strftime('%H:%M:%S UTC')} ({self.monitoring_interval} seconds)")
+                logger.info(f"😴 Starting sleep at {sleep_start_time.strftime('%H:%M:%S UTC')}")
+                
                 await asyncio.sleep(self.monitoring_interval)
+                
+                # Log actual wake-up time
+                actual_wake_time = datetime.utcnow()
+                actual_sleep_duration = (actual_wake_time - sleep_start_time).total_seconds()
+                logger.info(f"⏰ Woke up at {actual_wake_time.strftime('%H:%M:%S UTC')} (slept for {actual_sleep_duration:.2f}s, expected {self.monitoring_interval}s)")
+                
+                # Start monitoring cycle
+                loop_start_time = datetime.utcnow()
+                logger.info(f"🔄 Starting monitoring cycle {loop_id} at {loop_start_time.strftime('%H:%M:%S UTC')}")
+                
                 await self.update_validator_data()
                 await self.analyze_and_report()
                 
+                # End monitoring cycle
+                loop_end_time = datetime.utcnow()
+                duration = (loop_end_time - loop_start_time).total_seconds()
+                logger.info(f"✅ Monitoring cycle {loop_id} completed in {duration:.2f} seconds")
+                
+                # Check if cycle duration is causing timing drift
+                if duration > 120:  # More than 2 minutes
+                    logger.warning(f"⚠️ Long cycle duration ({duration:.2f}s) may cause timing drift!")
+                    logger.warning(f"🕐 Cycle started at {loop_start_time.strftime('%H:%M:%S UTC')}, ended at {loop_end_time.strftime('%H:%M:%S UTC')}")
+                
+                # Log the exact time when next sleep will begin
+                logger.info(f"💤 Next sleep will begin at {loop_end_time.strftime('%H:%M:%S UTC')}")
+                
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
+                error_time = datetime.utcnow()
+                logger.error(f"❌ Error in monitoring loop {loop_id} at {error_time.strftime('%H:%M:%S UTC')}: {e}")
+                logger.error(f"🔍 Error type: {type(e).__name__}")
+                logger.error(f"🤖 Bot ready status: {self.bot.is_ready()}")
+                logger.error(f"🔌 Bot connection status: {'Connected' if not self.bot.is_closed() else 'Disconnected'}")
+                
+                # Check if it's a Discord-related error
+                if 'discord' in str(e).lower() or 'websocket' in str(e).lower() or 'connection' in str(e).lower():
+                    logger.warning(f"🔌 Detected potential Discord connection issue - this may cause retry delays")
+                
+                logger.info(f"⏳ Retrying in 60 seconds...")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
     
     def save_data(self):
@@ -522,11 +624,22 @@ class ValidatorMonitor:
     def run(self):
         """Start the bot"""
         if not self.bot_token:
-            logger.error("DISCORD_BOT_TOKEN not found in environment variables")
+            logger.error("❌ DISCORD_BOT_TOKEN not found in environment variables")
             return
         
-        logger.info("Starting Symphony Oracle Monitor Bot...")
-        self.bot.run(self.bot_token)
+        startup_time = datetime.utcnow()
+        logger.info(f"🚀 Starting Symphony Oracle Monitor Bot at {startup_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        logger.info(f"🔧 Bot Configuration:")
+        logger.info(f"   📊 Monitoring Interval: {self.monitoring_interval} seconds ({self.monitoring_interval/60:.1f} minutes)")
+        logger.info(f"   💬 Discord Channel ID: {self.channel_id}")
+        logger.info(f"   🌐 API Base URL: {self.api_base}")
+        logger.info(f"   💰 Low Balance Threshold: {self.format_tokens_as_mld(int(self.low_balance_threshold))}")
+        
+        try:
+            self.bot.run(self.bot_token)
+        except Exception as e:
+            logger.error(f"❌ Critical error starting bot: {e}")
+            raise
 
 if __name__ == "__main__":
     monitor = ValidatorMonitor()
